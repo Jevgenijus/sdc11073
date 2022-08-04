@@ -51,7 +51,7 @@ DP_MAX_TIMEOUT = 5000  # 5 seconds
 
 _NETWORK_ADDRESSES_CHECK_TIMEOUT = 5
 
-MULTICAST_PORT = 3702
+MULTICAST_PORT = 10006
 MULTICAST_IPV4_ADDRESS = "239.255.255.250"
 MULTICAST_OUT_TTL = 15  # Time To Live for multicast_out
 
@@ -73,6 +73,7 @@ NS_A = "http://www.w3.org/2005/08/addressing"  # ws-addressing
 NS_D = 'http://docs.oasis-open.org/ws-dd/ns/discovery/2009/01'  # ws-discovery
 NS_S = "http://www.w3.org/2003/05/soap-envelope"  # "http://www.w3.org/2003/05/soap-envelope"
 NS_DPWS = 'http://docs.oasis-open.org/ws-dd/ns/dpws/2009/01'
+NS_UDP_PORT = 'urn:oid:1.3.6.1.4.1.3592.2.6933.4.1'
 ACTION_HELLO = NS_D + '/Hello'  # "http://docs.oasis-open.org/ws-dd/ns/discovery/2009/01/Hello"
 ACTION_BYE = NS_D + '/Bye'  # "http://docs.oasis-open.org/ws-dd/ns/discovery/2009/01/Bye"
 ACTION_PROBE = NS_D + '/Probe'  # "http://docs.oasis-open.org/ws-dd/ns/discovery/2009/01/Probe"
@@ -93,24 +94,34 @@ _IP_BLACKLIST = ('0.0.0.0', None)  # None can happen if an adapter does not have
 SEND_LOOP_IDLE_SLEEP = 0.1
 SEND_LOOP_BUSY_SLEEP = 0.01
 
+
 class WsaTag(QName):
     def __init__(self, localname):
         super().__init__(NS_A, localname)
 
+
 class WsdTag(QName):
     def __init__(self, localname):
         super().__init__(NS_D, localname)
+
 
 class S12Tag(QName):
     def __init__(self, localname):
         super().__init__(NS_S, localname)
 
 
-_namespaces_map = {'wsd': NS_D, 'wsa':NS_A, 's12':NS_S, 'dpws': NS_DPWS}
+class UDPTag(QName):
+    def __init__(self, localname):
+        super().__init__(NS_UDP_PORT, localname)
+
+
+_namespaces_map = {'wsd': NS_D, 'wsa':NS_A, 's12':NS_S, 'dpws': NS_DPWS, 'disco': NS_UDP_PORT}
+
 
 def _typesinfo(types):
     # helper for logging
     return [str(t) for t in types] if types else types
+
 
 def _getNetworkAddrs():
     '''
@@ -231,6 +242,7 @@ class SoapEnvelope:
         self._instanceId = ""
         self._sequenceId = ""
         self._messageNumber = ""
+        self._udpPort = None
         self._epr = ""
         self._types = []
         self._scopes = []
@@ -312,6 +324,12 @@ class SoapEnvelope:
 
     def setXAddrs(self, xAddrs):
         self._xAddrs = xAddrs
+
+    def getUdpPort(self):
+        return self._udpPort
+
+    def setUdpPort(self, udpPort):
+        self._udpPort = udpPort
 
     def getMetadataVersion(self):
         return self._metadataVersion
@@ -425,7 +443,7 @@ def _createXAddrNodes(parentNode, xAddrs):
 def _createEprNode(parentNode, epr):
     eprEl = SubElement(parentNode, WsaTag("EndpointReference"))
     _mkSubElementWithText(eprEl, WsaTag('Address'), epr)
-
+    # _mkSubElementWithText(parentNode, UDPTag('UdpAddr'), "soap.udp://10.11.12.13:10345")
 
 
 def _parseTypes(parentNode):
@@ -441,6 +459,7 @@ def _parseTypes(parentNode):
             types.append(q)
     return types
 
+
 def _parseScopes(parentNode):
     scopesNode = parentNode.find('wsd:Scopes', _namespaces_map)
     if scopesNode is not None:
@@ -450,12 +469,14 @@ def _parseScopes(parentNode):
     else:
         return []
 
+
 def _parseXAddrs(parentNode):
     xAddrNode = parentNode.find('wsd:XAddrs', _namespaces_map)
     if xAddrNode is not None:
         return [] if not xAddrNode.text else xAddrNode.text.split()
     else:
         return []
+
 
 def _parseEpr(parentNode):
     '''
@@ -469,11 +490,13 @@ def _parseEpr(parentNode):
         return addressNode.text
     return ''
 
+
 def _parseMetaDataVersion(parentNode):
     mdvNode = parentNode.find('wsd:MetadataVersion', _namespaces_map)
     if mdvNode is not None:
         return mdvNode.text
     return ''
+
 
 def _parseAppSequence(headerNode, env):
     appSeqNode = headerNode.find('wsd:AppSequence', _namespaces_map)
@@ -481,6 +504,7 @@ def _parseAppSequence(headerNode, env):
         env.setInstanceId(appSeqNode.attrib.get("InstanceId"))
         env.setSequenceId(appSeqNode.attrib.get("SequenceId"))
         env.setMessageNumber(appSeqNode.attrib.get("MessageNumber"))
+
 
 def _parseRelatesTo(headerNode, env):
     relatesTo = headerNode.find('wsa:RelatesTo',_namespaces_map)
@@ -490,10 +514,12 @@ def _parseRelatesTo(headerNode, env):
         if rel_type:
             env.setRelationshipType(rel_type)
 
+
 def _parseReplyTo(headerNode, env):
     replyTo = headerNode.find('wsa:ReplyTo',_namespaces_map)
     if replyTo is not None:
         env.setReplyTo(replyTo.text)
+
 
 def parseEnvelope(data, ipAddr, logger):
     parser = ETCompatXMLParser()
@@ -657,6 +683,7 @@ def createHelloMessage(env):
     header.append(Element(WsdTag('AppSequence'),
                                         attrib={"InstanceId": env.getInstanceId(),
                                                 "MessageNumber": env.getMessageNumber()}))
+    # header.append(env.getUdpPort())
     helloEl = SubElement(body, WsdTag('Hello'))
     _createEprNode(helloEl, env.getEPR())
     _createTypeNodes(helloEl, env.getTypes())
@@ -754,10 +781,117 @@ class _AddressMonitorThread(threading.Thread):
         self._quitEvent.set()
 
 
-@dataclass(frozen=True)
-class _SocketPair:
-    multi_in: socket.socket
-    multi_out_uni_in: socket.socket
+class Service:
+    def __init__(self, types, scopes, xAddrs, epr, instanceId, metadata_version=1):
+        self._types = types
+        self._scopes = scopes
+        self._xAddrs = xAddrs
+        self._epr = epr
+        self._instanceId = instanceId
+        self._messageNumber = 0
+        self._udpPort = None
+        self._metadataVersion = metadata_version
+
+    def getTypes(self):
+        return self._types
+
+    def setTypes(self, types):
+        self._types = types
+
+    def getScopes(self):
+        return self._scopes
+
+    def setScopes(self, scopes):
+        self._scopes = scopes
+
+    def getXAddrs(self):
+        ret = []
+        ipAddrs = None
+        for xAddr in self._xAddrs:
+            if '{ip}' in xAddr:
+                if ipAddrs is None:
+                    ipAddrs = _getNetworkAddrs()
+                for ipAddr in ipAddrs:
+                    if ipAddr not in _IP_BLACKLIST:
+                        ret.append(xAddr.format(ip=ipAddr))
+            else:
+                ret.append(xAddr)
+        return ret
+
+    def setXAddrs(self, xAddrs):
+        self._xAddrs = xAddrs
+
+    def getEPR(self):
+        return self._epr
+
+    def setEPR(self, epr):
+        self._epr = epr
+
+    def getInstanceId(self):
+        return self._instanceId
+
+    def setInstanceId(self, instanceId):
+        self._instanceId = instanceId
+
+    def getMessageNumber(self):
+        return self._messageNumber
+
+    def setMessageNumber(self, messageNumber):
+        self._messageNumber = messageNumber
+
+    def getMetadataVersion(self):
+        return self._metadataVersion
+
+    def setMetadataVersion(self, metadataVersion):
+        self._metadataVersion = metadataVersion
+
+    def setUdpPort(self, udpPort):
+        self._udpPort = udpPort
+
+    def getUdpPort(self):
+        return self._udpPort
+
+    def incrementMetadataVersion(self):
+        self._metadataVersion = self._metadataVersion + 1
+
+    def incrementMessageNumber(self):
+        self._messageNumber = self._messageNumber + 1
+
+    def isLocatedOn(self, *ipaddresses):
+        '''
+        @param ipaddresses: ip addresses, lists of strings or strings
+        '''
+        my_addresses = []
+        for i in ipaddresses:
+            if isinstance(i, str):
+                my_addresses.append(i)
+            else:
+                my_addresses.extend(i)
+        for addr in self.getXAddrs():
+            parsed = urllib.parse.urlsplit(addr)
+            ip_addr = parsed.netloc.split(':')[0]
+            if ip_addr in my_addresses:
+                return True
+        return False
+
+    def __repr__(self):
+        return 'Service epr={}, instanceId={} Xaddr={} scopes={} types={}'.format(self._epr, self._instanceId,
+                                                                          self._xAddrs,
+                                                                          ', '.join([str(x) for x in self._scopes]),
+                                                                          ', '.join([str(x) for x in self._types]))
+    def __str__(self):
+        return 'Service epr={}, instanceId={}\n   Xaddr={}\n   scopes={}\n   types={}'.format(self._epr, self._instanceId,
+                                                                          self._xAddrs,
+                                                                          ', '.join([str(x) for x in self._scopes]),
+                                                                          ', '.join([str(x) for x in self._types]))
+
+
+@dataclass(frozen=False)
+class _Sockets:
+    service_sockets: dict = field(default_factory=dict)
+    multi_in: socket.socket = None
+    multi_out_uni_in: socket.socket = None
+    uni_in: socket.socket = None
 
 
 class _NetworkingThreadWindows(object):
@@ -768,7 +902,7 @@ class _NetworkingThreadWindows(object):
         send_time: float
         msg: Any = field(compare=False)
 
-    def __init__(self, observer, logger):
+    def __init__(self, observer, logger, localServices):
         self._recvThread = None
         self._qread_thread = None
         self._sendThread = None
@@ -777,6 +911,7 @@ class _NetworkingThreadWindows(object):
         self._send_queue = queue.PriorityQueue(10000)
         self._read_queue = queue.Queue(10000)
         self._knownMessageIds = deque(maxlen=50)
+        self._localServices = localServices
         self._observer = observer
         self._logger = logger
 
@@ -789,6 +924,26 @@ class _NetworkingThreadWindows(object):
     def _register(self, sock):
         self._select_in.append(sock)
         self._full_selector.register(sock, selectors.EVENT_READ)
+
+    def makeServiceSockets(self, service):
+        # When DiscoveryProxy is active each Service should have its own UdpPort per active network
+        for addr in self.getActiveAddresses():
+            service_socket = self._makeServiceSocket(service.getEPR(), addr)
+            with self._sockets_by_address_lock:
+                if addr in self._sockets_by_address:
+                    self._sockets_by_address[addr].service_sockets[service.getEPR()] = service_socket
+                else:
+                    self._sockets_by_address[addr] = _Sockets()
+                    self._sockets_by_address[addr].service_sockets[service.getEPR()] = service_socket
+
+    def _makeServiceSocket(self, epr, addr):
+        service_socket = socket.socket(family=socket.AF_INET, type=socket.SOCK_DGRAM)
+        service_socket.bind((addr, 0))  # bind to a random free port
+        _, udp_port = service_socket.getsockname()
+        self._register(service_socket)
+        self._localServices[epr].setUdpPort(udp_port)
+        self._logger.debug("Created socket for service %s on Network %s UdpPort %s", epr, addr, udp_port)
+        return service_socket
 
     def _unregister(self, sock):
         self._select_in.remove(sock)
@@ -829,15 +984,26 @@ class _NetworkingThreadWindows(object):
         with self._sockets_by_address_lock:
             self._register(multicast_out_sock)
             self._register(multicast_in_sock)
-            self._sockets_by_address[addr] = _SocketPair(multicast_in_sock, multicast_out_sock)
+            addr_sockets = _Sockets(multi_in=multicast_in_sock, multi_out_uni_in=multicast_out_sock)
+
+            for epr in self._localServices.keys():
+                service_socket = self._makeServiceSocket(epr, addr)
+                addr_sockets.service_sockets[epr] = service_socket
+
+            self._sockets_by_address[addr] = addr_sockets
 
     def removeSourceAddr(self, addr):
-        sock_pair = self._sockets_by_address.get(addr)
-        if sock_pair:
+        sockets = self._sockets_by_address.get(addr)
+        if sockets:
             with self._sockets_by_address_lock:
-                for sock in (sock_pair.multi_in, sock_pair.multi_out_uni_in):
+                for sock in (sockets.multi_in, sockets.multi_out_uni_in):
                     self._unregister(sock)
                     sock.close()
+
+                for sock in sockets.service_sockets.values():
+                    self._unregister(sock)
+                    sock.close()
+
                 del self._sockets_by_address[addr]
 
     def addUnicastMessage(self, env, addr, port, initialDelay=0):
@@ -889,10 +1055,10 @@ class _NetworkingThreadWindows(object):
 
     def isFromMySocket(self, addr):
         with self._sockets_by_address_lock:
-            for ip_addr, sock_pair in self._sockets_by_address.items():
+            for ip_addr, addr_sockets in self._sockets_by_address.items():
                 if addr[0] == ip_addr:
                     try:
-                        sock_name = sock_pair.multi_out_uni_in.getsockname()
+                        sock_name = addr_sockets.multi_out_uni_in.getsockname()
                         if addr[1] == sock_name[1]:  # compare ports
                             return True
                     except OSError:  # port is not opened
@@ -974,6 +1140,7 @@ class _NetworkingThreadWindows(object):
         if msg.msgType() == Message.UNICAST:
             getCommunicationLogger().logDiscoveryMsgOut(msg.getAddr(), data)
             self._uniOutSocket.sendto(data, (msg.getAddr(), msg.getPort()))
+            print("Sending unicast")
         else:
             getCommunicationLogger().logBroadCastMsgOut(data)
             with self._sockets_by_address_lock:
@@ -1021,13 +1188,6 @@ class _NetworkingThreadWindows(object):
             return list(self._sockets_by_address.keys())
 
 
-@dataclass(frozen=True)
-class _Sockets:
-    multi_in: socket.socket
-    uni_in: socket.socket
-    multi_out_uni_in: socket.socket
-
-
 class _NetworkingThreadPosix(_NetworkingThreadWindows):
 
     @staticmethod
@@ -1062,7 +1222,13 @@ class _NetworkingThreadPosix(_NetworkingThreadWindows):
             self._register(multicast_out_sock)
             self._register(unicast_in_sock)
             self._register(multicast_in_sock)
-            self._sockets_by_address[addr] = _Sockets(multicast_in_sock, unicast_in_sock, multicast_out_sock)
+            addr_sockets = _Sockets(multi_in=multicast_in_sock, uni_in=unicast_in_sock, multi_out_uni_in=multicast_out_sock)
+
+            for epr in self._localServices.keys():
+                service_socket = self._makeServiceSocket(epr, addr)
+                addr_sockets.service_sockets[epr] = service_socket
+
+            self._sockets_by_address[addr] = addr_sockets
 
     def removeSourceAddr(self, addr):
         sockets = self._sockets_by_address.get(addr)
@@ -1071,6 +1237,11 @@ class _NetworkingThreadPosix(_NetworkingThreadWindows):
                 for sock in (sockets.multi_in, sockets.uni_in, sockets.multi_out_uni_in):
                     self._unregister(sock)
                     sock.close()
+
+                for sock in sockets.service_sockets.values():
+                    self._unregister(sock)
+                    sock.close()
+
                 del self._sockets_by_address[addr]
 
 
@@ -1098,110 +1269,12 @@ class Message:
         return self._msgType
 
 
-class Service:
-    def __init__(self, types, scopes, xAddrs, epr, instanceId, metadata_version=1):
-        self._types = types
-        self._scopes = scopes
-        self._xAddrs = xAddrs
-        self._epr = epr
-        self._instanceId = instanceId
-        self._messageNumber = 0
-        self._metadataVersion = metadata_version
-
-    def getTypes(self):
-        return self._types
-
-    def setTypes(self, types):
-        self._types = types
-
-    def getScopes(self):
-        return self._scopes
-
-    def setScopes(self, scopes):
-        self._scopes = scopes
-
-    def getXAddrs(self):
-        ret = []
-        ipAddrs = None
-        for xAddr in self._xAddrs:
-            if '{ip}' in xAddr:
-                if ipAddrs is None:
-                    ipAddrs = _getNetworkAddrs()
-                for ipAddr in ipAddrs:
-                    if ipAddr not in _IP_BLACKLIST:
-                        ret.append(xAddr.format(ip=ipAddr))
-            else:
-                ret.append(xAddr)
-        return ret
-
-    def setXAddrs(self, xAddrs):
-        self._xAddrs = xAddrs
-
-    def getEPR(self):
-        return self._epr
-
-    def setEPR(self, epr):
-        self._epr = epr
-
-    def getInstanceId(self):
-        return self._instanceId
-
-    def setInstanceId(self, instanceId):
-        self._instanceId = instanceId
-
-    def getMessageNumber(self):
-        return self._messageNumber
-
-    def setMessageNumber(self, messageNumber):
-        self._messageNumber = messageNumber
-
-    def getMetadataVersion(self):
-        return self._metadataVersion
-
-    def setMetadataVersion(self, metadataVersion):
-        self._metadataVersion = metadataVersion
-
-    def incrementMetadataVersion(self):
-        self._metadataVersion = self._metadataVersion + 1
-
-    def incrementMessageNumber(self):
-        self._messageNumber = self._messageNumber + 1
-
-    def isLocatedOn(self, *ipaddresses):
-        '''
-        @param ipaddresses: ip addresses, lists of strings or strings
-        '''
-        my_addresses = []
-        for i in ipaddresses:
-            if isinstance(i, str):
-                my_addresses.append(i)
-            else:
-                my_addresses.extend(i)
-        for addr in self.getXAddrs():
-            parsed = urllib.parse.urlsplit(addr)
-            ip_addr = parsed.netloc.split(':')[0]
-            if ip_addr in my_addresses:
-                return True
-        return False
-
-    def __repr__(self):
-        return 'Service epr={}, instanceId={} Xaddr={} scopes={} types={}'.format(self._epr, self._instanceId,
-                                                                          self._xAddrs,
-                                                                          ', '.join([str(x) for x in self._scopes]),
-                                                                          ', '.join([str(x) for x in self._types]))
-    def __str__(self):
-        return 'Service epr={}, instanceId={}\n   Xaddr={}\n   scopes={}\n   types={}'.format(self._epr, self._instanceId,
-                                                                          self._xAddrs,
-                                                                          ', '.join([str(x) for x in self._scopes]),
-                                                                          ', '.join([str(x) for x in self._types]))
-
-
-
 def _isTypeInList(ttype, types):
     for entry in types:
         if matchType(ttype, entry):
             return True
     return False
+
 
 def _isScopeInList(scope, scopes):
     for entry in scopes:
@@ -1231,6 +1304,7 @@ def _matchesFilter(service, types, scopes, logger=None):
         if logger:
             logger.debug('matching scopes')
     return True
+
 
 def filterServices(services, types, scopes, logger=None):
     return [service for service in services if _matchesFilter(service, types, scopes, logger)]
@@ -1364,6 +1438,7 @@ class WSDiscoveryWithHTTPProxy(object):
         env.setTypes(service.getTypes())
         env.setScopes(service.getScopes())
         env.setXAddrs(service.getXAddrs())
+        env.setUdpPort(service.getUdpPort())
         env.setEPR(service.getEPR())
         env.setMetadataVersion(str(service.getMetadataVersion()))
         data = createHelloMessage(env)
@@ -1395,6 +1470,7 @@ class WsDiscoveryProxyAndUdp:
     def __init__(self, wsd_proxy_instance, wsd_over_udp_instance):
         self._wsd_proxy = wsd_proxy_instance
         self._wsd_udp = wsd_over_udp_instance
+        self._wsd_udp.setDiscoveryProxyActive()
 
     @classmethod
     def withSingleAdapter(cls, proxy_url, adapterName, logger=None, forceAdapterName=False, sslContext=None):
@@ -1505,6 +1581,9 @@ class WSDiscoveryBase(object):
 
         self._logger = logger or logging.getLogger('sdc.discover')
         random.seed(int(time.time() * 1000000))
+
+    def setDiscoveryProxyActive(self):
+        self._dpActive = True
 
     def setRemoteServiceProbeMatchCallback(self, cb):
         """Set callback, which will be called when a service was received via a ProbeMatch message.
@@ -1676,6 +1755,8 @@ class WSDiscoveryBase(object):
         env.setAction(ACTION_RESOLVE_MATCH)
         env.setTo(WSA_ANONYMOUS)
         env.setInstanceId(str(service.getInstanceId()))
+        if self._dpActive:
+            env.setUdpPort(service.getUdpPort())
         env.setMessageNumber(str(service.getMessageNumber()))
         env.setRelatesTo(relatesTo)
         env.setProbeResolveMatches([ProbeResolveMatch(service.getEPR(), service.getTypes(), service.getScopes(),
@@ -1686,11 +1767,14 @@ class WSDiscoveryBase(object):
         self._logger.info('sending probe match to %s for %d services', addr, len(services))
         msgNumber = 1
         # send one match response for every service, dpws explorer can't handle telegram otherwise if too many devices reported
+        # <disco:UdpAddr>soap.udp://10.11.12.13:10345</disco:UdpAddr>
         for service in services:
             env = SoapEnvelope()
             env.setAction(ACTION_PROBE_MATCH)
             env.setTo(WSA_ANONYMOUS)
             env.setInstanceId(_generateInstanceId())
+            if self._dpActive:
+                env.setUdpPort(service.getUdpPort())
             env.setMessageNumber(str(msgNumber))
             env.setRelatesTo(relatesTo)
 
@@ -1737,6 +1821,8 @@ class WSDiscoveryBase(object):
         env.setTo(ADDRESS_ALL)
         env.setInstanceId(str(service.getInstanceId()))
         env.setMessageNumber(str(service.getMessageNumber()))
+        if self._dpActive:
+            env.setUdpPort(service.getUdpPort())
         env.setTypes(service.getTypes())
         env.setScopes(service.getScopes())
         env.setXAddrs(service.getXAddrs())
@@ -1796,9 +1882,9 @@ class WSDiscoveryBase(object):
         if self._networkingThread is not None:
             return
         if platform.system() != 'Windows':
-            self._networkingThread = _NetworkingThreadPosix(self, self._logger)
+            self._networkingThread = _NetworkingThreadPosix(self, self._logger, self._localServices)
         else:
-            self._networkingThread = _NetworkingThreadWindows(self, self._logger)
+            self._networkingThread = _NetworkingThreadWindows(self, self._logger, self._localServices)
         self._networkingThread.start()
 
         self._addrsMonitorThread = _AddressMonitorThread(self)
@@ -1887,7 +1973,10 @@ class WSDiscoveryBase(object):
 
         instanceId = _generateInstanceId()
         metadata_version = self._localServices[epr].getMetadataVersion() + 1 if epr in self._localServices else 1
+
         service = Service(types, scopes, xAddrs, epr, instanceId, metadata_version=metadata_version)
+        if self._dpActive:
+           self._networkingThread.makeServiceSockets(service)
         self._logger.info('publishing %r', service)
         self._localServices[epr] = service
         self._sendHello(service)
