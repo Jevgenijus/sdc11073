@@ -51,7 +51,7 @@ DP_MAX_TIMEOUT = 5000  # 5 seconds
 
 _NETWORK_ADDRESSES_CHECK_TIMEOUT = 5
 
-MULTICAST_PORT = 10006
+MULTICAST_PORT = 3702
 MULTICAST_IPV4_ADDRESS = "239.255.255.250"
 MULTICAST_OUT_TTL = 15  # Time To Live for multicast_out
 
@@ -103,6 +103,11 @@ class WsaTag(QName):
 class WsdTag(QName):
     def __init__(self, localname):
         super().__init__(NS_D, localname)
+
+
+class DiscoTag(QName):
+    def __init__(self, localname):
+        super().__init__(NS_UDP_PORT, localname)
 
 
 class S12Tag(QName):
@@ -242,7 +247,7 @@ class SoapEnvelope:
         self._instanceId = ""
         self._sequenceId = ""
         self._messageNumber = ""
-        self._udpPort = None
+        self._udpAddr = None
         self._epr = ""
         self._types = []
         self._scopes = []
@@ -325,11 +330,11 @@ class SoapEnvelope:
     def setXAddrs(self, xAddrs):
         self._xAddrs = xAddrs
 
-    def getUdpPort(self):
-        return self._udpPort
+    def getUdpAddr(self):
+        return self._udpAddr
 
-    def setUdpPort(self, udpPort):
-        self._udpPort = udpPort
+    def setUdpAddr(self, udpAddr):
+        self._udpAddr = udpAddr
 
     def getMetadataVersion(self):
         return self._metadataVersion
@@ -375,7 +380,7 @@ def matchType(type1, type2):
     return type1.namespace == type2.namespace and type1.localname == type2.localname
 
 
-def createSkelSoapMessage(soapAction, messageId, relatesTo=None, to=None, replyTo=None):
+def createSkelSoapMessage(soapAction, messageId, relatesTo=None, to=None, replyTo=None, udpPort=None):
     doc = Element(S12Tag('Envelope'), nsmap=_namespaces_map) #Prefix.partialMap(Prefix.S12, Prefix.WSA, Prefix.WSD, Prefix.DPWS))
     header = SubElement(doc, S12Tag('Header'))
     action = SubElement(header, WsaTag('Action'))
@@ -389,6 +394,8 @@ def createSkelSoapMessage(soapAction, messageId, relatesTo=None, to=None, replyT
         _mkSubElementWithText(header, WsaTag('To'), to)
     if replyTo:
         _mkSubElementWithText(header, WsaTag('ReplyTo'), replyTo)
+    if udpPort:
+        _mkSubElementWithText(header, DiscoTag('UdpAddr'), udpPort)
 
     return doc, header, body
 
@@ -622,7 +629,8 @@ def createMessage(env):
 
 
 def createProbeMessage(env):
-    doc, header, body = createSkelSoapMessage(ACTION_PROBE, env.getMessageId(), to=env.getTo(), replyTo=env.getReplyTo())
+    doc, header, body = createSkelSoapMessage(ACTION_PROBE, env.getMessageId(),
+                                              to=env.getTo(), replyTo=env.getReplyTo(), udpPort=env.getUdpAddr())
     probeEl = SubElement(body, WsdTag('Probe'))
     _createTypeNodes(probeEl, env.getTypes())
     _createScopeNodes(probeEl, env.getScopes())
@@ -651,7 +659,7 @@ def createProbeMatchMessage(env):
 
 def createResolveMessage(env):
     doc, header, body = createSkelSoapMessage(ACTION_RESOLVE, env.getMessageId(),
-                                              to=env.getTo(), replyTo=env.getReplyTo())
+                                              to=env.getTo(), replyTo=env.getReplyTo(), udpPort=env.getUdpAddr())
     resolveEl = SubElement(body, WsdTag('Resolve'))
     _createEprNode(resolveEl, env.getEPR())
     return tostring(doc)
@@ -683,6 +691,7 @@ def createHelloMessage(env):
     header.append(Element(WsdTag('AppSequence'),
                                         attrib={"InstanceId": env.getInstanceId(),
                                                 "MessageNumber": env.getMessageNumber()}))
+    _mkSubElementWithText(header, DiscoTag('UdpAddr'), env.getUdpAddr())
     # header.append(env.getUdpPort())
     helloEl = SubElement(body, WsdTag('Hello'))
     _createEprNode(helloEl, env.getEPR())
@@ -789,6 +798,7 @@ class Service:
         self._epr = epr
         self._instanceId = instanceId
         self._messageNumber = 0
+        self._udpAddr = None
         self._udpPort = None
         self._metadataVersion = metadata_version
 
@@ -845,8 +855,12 @@ class Service:
     def setMetadataVersion(self, metadataVersion):
         self._metadataVersion = metadataVersion
 
-    def setUdpPort(self, udpPort):
-        self._udpPort = udpPort
+    def setUdpAddr(self, udpAddr, port):
+        self._udpAddr = udpAddr
+        self._udpPort = port
+
+    def getUdpAddr(self):
+        return self._udpAddr
 
     def getUdpPort(self):
         return self._udpPort
@@ -875,15 +889,30 @@ class Service:
         return False
 
     def __repr__(self):
-        return 'Service epr={}, instanceId={} Xaddr={} scopes={} types={}'.format(self._epr, self._instanceId,
+        return 'Service epr={}, instanceId={} Xaddr={} scopes={} types={} udpPort={}'.format(self._epr, self._instanceId,
                                                                           self._xAddrs,
                                                                           ', '.join([str(x) for x in self._scopes]),
-                                                                          ', '.join([str(x) for x in self._types]))
+                                                                          ', '.join([str(x) for x in self._types]),
+                                                                                             self._udpPort)
     def __str__(self):
-        return 'Service epr={}, instanceId={}\n   Xaddr={}\n   scopes={}\n   types={}'.format(self._epr, self._instanceId,
+        return 'Service epr={}, instanceId={}\n   Xaddr={}\n   scopes={}\n   types={}\n udpPort={}'.format(self._epr, self._instanceId,
                                                                           self._xAddrs,
                                                                           ', '.join([str(x) for x in self._scopes]),
-                                                                          ', '.join([str(x) for x in self._types]))
+                                                                          ', '.join([str(x) for x in self._types]),
+                                                                                             self._udpPort)
+
+
+@dataclass(frozen=False)
+class Client:
+    id: str
+    addr: str
+    udpPort: int
+
+    def getUdpAddr(self):
+        return f"soap.udp://{self.addr}:{self.udpPort}"
+
+    def __str__(self):
+        return f"Client with Id {self.id} started on {self.udpPort}"
 
 
 @dataclass(frozen=False)
@@ -919,31 +948,58 @@ class _NetworkingThreadWindows(object):
         self._full_selector = selectors.DefaultSelector()
         self._sockets_by_address = {}
         self._sockets_by_address_lock = threading.RLock()
+        self._client_sockets = {}
+        self._client_sockets_lock = threading.RLock()
         self._uni_out_socket = None
 
     def _register(self, sock):
         self._select_in.append(sock)
         self._full_selector.register(sock, selectors.EVENT_READ)
 
-    def makeServiceSockets(self, service):
-        # When DiscoveryProxy is active each Service should have its own UdpPort per active network
-        for addr in self.getActiveAddresses():
-            service_socket = self._makeServiceSocket(service.getEPR(), addr)
-            with self._sockets_by_address_lock:
-                if addr in self._sockets_by_address:
-                    self._sockets_by_address[addr].service_sockets[service.getEPR()] = service_socket
-                else:
-                    self._sockets_by_address[addr] = _Sockets()
-                    self._sockets_by_address[addr].service_sockets[service.getEPR()] = service_socket
-
-    def _makeServiceSocket(self, epr, addr):
+    def makeServiceSocket(self, addr, service):
+        # When DiscoveryProxy is active each Service should have its own UdpPort
         service_socket = socket.socket(family=socket.AF_INET, type=socket.SOCK_DGRAM)
         service_socket.bind((addr, 0))  # bind to a random free port
         _, udp_port = service_socket.getsockname()
         self._register(service_socket)
-        self._localServices[epr].setUdpPort(udp_port)
-        self._logger.debug("Created socket for service %s on Network %s UdpPort %s", epr, addr, udp_port)
-        return service_socket
+        self._localServices[service.getEPR()].setUdpAddr(f"soap.udp://{addr}:{udp_port}", udp_port)
+        self._logger.debug("Created socket for service %s on Network %s UdpPort %s", service.getEPR(), addr, udp_port)
+
+        with self._sockets_by_address_lock:
+            if addr in self._sockets_by_address:
+                self._sockets_by_address[addr].service_sockets[service.getEPR()] = service_socket
+            else:
+                self._sockets_by_address[addr] = _Sockets()
+                self._sockets_by_address[addr].service_sockets[service.getEPR()] = service_socket
+
+    def makeClientSocket(self, addr, clientId):
+        client_socket = socket.socket(family=socket.AF_INET, type=socket.SOCK_DGRAM)
+        client_socket.bind((addr, 0))  # bind to a random free port
+        _, udp_port = client_socket.getsockname()
+
+        self._register(client_socket)
+        self._logger.debug("Created socket for client %s on Network %s UdpPort %s", clientId, addr, udp_port)
+        with self._client_sockets_lock:
+            self._client_sockets[clientId] = client_socket
+        return udp_port
+
+    def removeService(self, addr, epr):
+        sockets_addr = self._sockets_by_address.get(addr, None)
+        if sockets_addr:
+            with self._sockets_by_address_lock:
+                self._unregister(sockets_addr.service_sockets[epr])
+                sockets_addr.service_sockets[epr].close()
+
+                del self._sockets_by_address[addr].service_sockets[epr]
+
+    def removeClient(self, clientId):
+        client_socket = self._client_sockets.get(clientId, None)
+        if client_socket:
+            with self._client_sockets_lock:
+                self._unregister(client_socket)
+                client_socket.close()
+
+                del self._client_sockets[clientId]
 
     def _unregister(self, sock):
         self._select_in.remove(sock)
@@ -973,7 +1029,10 @@ class _NetworkingThreadWindows(object):
         return sock
 
     def addSourceAddr(self, addr):
-        """None means 'system default'"""
+        """
+        None means 'system default'
+        This method does not apply for instances running with discovery proxy
+        """
         multicast_in_sock = self._createMulticastInSocket(addr)
         try:
             multicast_in_sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, self._makeMreq(addr))
@@ -984,15 +1043,10 @@ class _NetworkingThreadWindows(object):
         with self._sockets_by_address_lock:
             self._register(multicast_out_sock)
             self._register(multicast_in_sock)
-            addr_sockets = _Sockets(multi_in=multicast_in_sock, multi_out_uni_in=multicast_out_sock)
-
-            for epr in self._localServices.keys():
-                service_socket = self._makeServiceSocket(epr, addr)
-                addr_sockets.service_sockets[epr] = service_socket
-
-            self._sockets_by_address[addr] = addr_sockets
+            self._sockets_by_address[addr] = _Sockets(multi_in=multicast_in_sock, multi_out_uni_in=multicast_out_sock)
 
     def removeSourceAddr(self, addr):
+        # This method does not apply for instances running with discovery proxy
         sockets = self._sockets_by_address.get(addr)
         if sockets:
             with self._sockets_by_address_lock:
@@ -1000,15 +1054,11 @@ class _NetworkingThreadWindows(object):
                     self._unregister(sock)
                     sock.close()
 
-                for sock in sockets.service_sockets.values():
-                    self._unregister(sock)
-                    sock.close()
-
                 del self._sockets_by_address[addr]
 
     def addUnicastMessage(self, env, addr, port, initialDelay=0):
         msg = Message(env, addr, port, Message.UNICAST, initialDelay)
-        self._logger.debug('addUnicastMessage: adding message Id %s. delay=%.2f'.format(env.getMessageId(), initialDelay))
+        self._logger.debug('addUnicastMessage: adding message Id %s. delay=%.2f', env.getMessageId(), initialDelay)
         self._repeated_enqueue_msg(msg, initialDelay, UNICAST_UDP_REPEAT, UNICAST_UDP_MIN_DELAY,
                                    UNICAST_UDP_MAX_DELAY, UNICAST_UDP_UPPER_DELAY)
 
@@ -1104,6 +1154,7 @@ class _NetworkingThreadWindows(object):
                     continue
                 else:
                     self._knownMessageIds.appendleft(mid)
+
                 self._observer.envReceived(env, addr)
 
     def _sendMsg(self, msg):
@@ -1140,7 +1191,6 @@ class _NetworkingThreadWindows(object):
         if msg.msgType() == Message.UNICAST:
             getCommunicationLogger().logDiscoveryMsgOut(msg.getAddr(), data)
             self._uniOutSocket.sendto(data, (msg.getAddr(), msg.getPort()))
-            print("Sending unicast")
         else:
             getCommunicationLogger().logBroadCastMsgOut(data)
             with self._sockets_by_address_lock:
@@ -1223,11 +1273,6 @@ class _NetworkingThreadPosix(_NetworkingThreadWindows):
             self._register(unicast_in_sock)
             self._register(multicast_in_sock)
             addr_sockets = _Sockets(multi_in=multicast_in_sock, uni_in=unicast_in_sock, multi_out_uni_in=multicast_out_sock)
-
-            for epr in self._localServices.keys():
-                service_socket = self._makeServiceSocket(epr, addr)
-                addr_sockets.service_sockets[epr] = service_socket
-
             self._sockets_by_address[addr] = addr_sockets
 
     def removeSourceAddr(self, addr):
@@ -1235,10 +1280,6 @@ class _NetworkingThreadPosix(_NetworkingThreadWindows):
         if sockets:
             with self._sockets_by_address_lock:
                 for sock in (sockets.multi_in, sockets.uni_in, sockets.multi_out_uni_in):
-                    self._unregister(sock)
-                    sock.close()
-
-                for sock in sockets.service_sockets.values():
                     self._unregister(sock)
                     sock.close()
 
@@ -1328,24 +1369,24 @@ class WSDiscoveryWithHTTPProxy(object):
     def stop(self):
         'cleans up and stops the discovery server'
 
-    def searchServices(self, types=None, scopes=None, timeout=5):
+    def searchServices(self, client, types=None, scopes=None, timeout=5):
         '''search for services given the TYPES and SCOPES in a given timeout
         '''
-        remoteServices = self._sendProbe(types, scopes)
+        remoteServices = self._sendProbe(client, types, scopes)
         filtered = filterServices(remoteServices.values(), types, scopes, self._logger)
         if not self.resolve_services:
             return filtered
 
-        resolvedServices = []
+        resolvedServices = {}
         for s in filtered:
-            resolvedServices.append( self._sendResolve(s.getEPR()))
+            resolvedServices = {**resolvedServices, **self._sendResolve(client, s.getEPR())}
         return resolvedServices
 
-    def searchMultipleTypes(self, typesList, scopes=None, timeout=5, repeatProbeInterval=3):
+    def searchMultipleTypes(self, client, typesList, scopes=None, timeout=5, repeatProbeInterval=3):
         # repeatProbeInterval is not needed, but kept in order to have identical signature
         result = {} # avoid double entries by adding to dictionary with epr as key
         for t in typesList:
-            services = self.searchServices(t, scopes, timeout)
+            services = self.searchServices(client, t, scopes, timeout)
             for s in services:
                 result[s.getEPR()] = s
         return result.values()
@@ -1366,16 +1407,14 @@ class WSDiscoveryWithHTTPProxy(object):
         # do nothing, this implementation has no internal list
         pass
 
-    def publishService(self, epr, types, scopes, xAddrs):
+    def publishService(self, service):
         """Publish a service with the given TYPES, SCOPES and XAddrs (service addresses)
 
         if xAddrs contains item, which includes {ip} pattern, one item per IP addres will be sent
         """
-        instanceId = _generateInstanceId()
-        metadata_version = self._localServices[epr].getMetadataVersion() + 1 if epr in self._localServices else 1
-        service = Service(types, scopes, xAddrs, epr, instanceId, metadata_version=metadata_version)
-        self._logger.info('publishing %r', service)
-        self._localServices[epr] = service
+        metadata_version = self._localServices[service.getEPR()].getMetadataVersion() + 1 if service.getEPR() in self._localServices else 1
+        service.setMetadataVersion(metadata_version)
+        self._localServices[service.getEPR] = service
         self._sendHello(service)
 
     def clearService(self, epr):
@@ -1394,13 +1433,14 @@ class WSDiscoveryWithHTTPProxy(object):
         conn.close()
         return resp_data
 
-    def _sendProbe(self, types=None, scopes=None):
+    def _sendProbe(self, client, types=None, scopes=None):
         self._logger.debug('sending probe types=%r scopes=%r', _typesinfo(types), scopes)
         env = SoapEnvelope()
         env.setAction(ACTION_PROBE)
         env.setTo(ADDRESS_ALL)
         env.setTypes(types)
         env.setScopes(scopes)
+        env.setUdpAddr(client.getUdpAddr())
         data = createProbeMessage(env)
         resp_data = self.post_http(data)
         getCommunicationLogger().logDiscoveryMsgIn(self._dpAddr.netloc, resp_data)
@@ -1408,15 +1448,16 @@ class WSDiscoveryWithHTTPProxy(object):
         services = {}
         for match in resp_env.getProbeResolveMatches():
             services[match.getEPR()] = Service(match.getTypes(), match.getScopes(), match.getXAddrs(), match.getEPR(),
-                                               resp_env.getInstanceId(), metadata_version=int(match.getMetadataVersion))
+                                               resp_env.getInstanceId(), metadata_version=int(match.getMetadataVersion()))
         return services
 
-    def _sendResolve(self, epr):
+    def _sendResolve(self, client, epr):
         self._logger.debug('sending resolve on %s', epr)
         env = SoapEnvelope()
         env.setAction(ACTION_RESOLVE)
         env.setTo(ADDRESS_ALL)
         env.setEPR(epr)
+        env.setUdpAddr(client.getUdpAddr())
         data = createResolveMessage(env)
         resp_data = self.post_http(data)
         getCommunicationLogger().logDiscoveryMsgIn(self._dpAddr.netloc, resp_data)
@@ -1424,7 +1465,7 @@ class WSDiscoveryWithHTTPProxy(object):
         services = {}
         for match in resp_env.getProbeResolveMatches():
             services[match.getEPR()] = Service(match.getTypes(), match.getScopes(), match.getXAddrs(), match.getEPR(),
-                                               resp_env.getInstanceId(), metadata_version=int(match.getMetadataVersion))
+                                               resp_env.getInstanceId(), metadata_version=int(match.getMetadataVersion()))
         return services
 
     def _sendHello(self, service):
@@ -1438,7 +1479,7 @@ class WSDiscoveryWithHTTPProxy(object):
         env.setTypes(service.getTypes())
         env.setScopes(service.getScopes())
         env.setXAddrs(service.getXAddrs())
-        env.setUdpPort(service.getUdpPort())
+        env.setUdpAddr(service.getUdpAddr())
         env.setEPR(service.getEPR())
         env.setMetadataVersion(str(service.getMetadataVersion()))
         data = createHelloMessage(env)
@@ -1470,27 +1511,13 @@ class WsDiscoveryProxyAndUdp:
     def __init__(self, wsd_proxy_instance, wsd_over_udp_instance):
         self._wsd_proxy = wsd_proxy_instance
         self._wsd_udp = wsd_over_udp_instance
-        self._wsd_udp.setDiscoveryProxyActive()
 
     @classmethod
     def withSingleAdapter(cls, proxy_url, adapterName, logger=None, forceAdapterName=False, sslContext=None):
         """Alternative constructor that instantiates WSDiscoveryWithHTTPProxy and WSDiscoverySingleAdapter"""
         proxy = WSDiscoveryWithHTTPProxy(proxy_url, logger, sslContext)
         direct = WSDiscoverySingleAdapter(adapterName, logger, forceAdapterName)
-        return cls(proxy, direct)
-
-    @classmethod
-    def withWhitelistAdapter(cls, proxy_url, acceptedAdapterIPAddresses, logger=None, sslContext=None):
-        """Alternative constructor that instantiates WSDiscoveryWithHTTPProxy and WSDiscoveryWhitelist"""
-        proxy = WSDiscoveryWithHTTPProxy(proxy_url, logger, sslContext)
-        direct = WSDiscoveryWhitelist(acceptedAdapterIPAddresses, logger )
-        return cls(proxy, direct)
-
-    @classmethod
-    def withBlacklistAdapter(cls, proxy_url, ignoredAdaptorIPAddresses, logger=None, sslContext=None):
-        """Alternative constructor that instantiates WSDiscoveryWithHTTPProxy and WSDiscoveryBlacklist"""
-        proxy = WSDiscoveryWithHTTPProxy(proxy_url, logger, sslContext)
-        direct = WSDiscoveryBlacklist(ignoredAdaptorIPAddresses, logger )
+        direct.setDiscoveryProxyActive(proxy_url)
         return cls(proxy, direct)
 
     def start(self):
@@ -1514,23 +1541,17 @@ class WsDiscoveryProxyAndUdp:
                 results[s.getEPR()] = s
         return results.values()
 
-    def searchMultipleTypes(self, typesList, scopes=None, timeout=5, repeatProbeInterval=3,
-                            searchproxy=True, searchdirekt=False):
+    def searchMultipleTypes(self, client, typesList, scopes=None, timeout=5, repeatProbeInterval=3):
         results = {}
-        if searchproxy:
-            services = self._wsd_proxy.searchMultipleTypes(typesList, scopes, timeout, repeatProbeInterval)
-            for s in services:
-                results[s.getEPR()] = s
-        if searchdirekt:
-            services = self._wsd_udp.searchMultipleTypes(typesList, scopes, timeout, repeatProbeInterval)
-            for s in services:
-                results[s.getEPR()] = s
+        services = self._wsd_proxy.searchMultipleTypes(client, typesList, scopes, timeout, repeatProbeInterval)
+        for s in services:
+            results[s.getEPR()] = s
+
         return results.values()
 
     def getActiveAddresses(self):
-        addresses = set(self._wsd_proxy.getActiveAddresses())
-        addresses.update(self._wsd_udp.getActiveAddresses())
-        return list(addresses)
+        # proxy discovery shall use only one addr (on which proxy is running)
+        return self._wsd_proxy.getActiveAddresses()
 
     def clearRemoteServices(self):
         self._wsd_proxy.clearRemoteServices()
@@ -1541,8 +1562,8 @@ class WsDiscoveryProxyAndUdp:
         self._wsd_udp.clearLocalServices()
 
     def publishService(self, epr, types, scopes, xAddrs):
-        self._wsd_proxy.publishService(epr, types, scopes, xAddrs)
-        self._wsd_udp.publishService(epr, types, scopes, xAddrs)
+        service = self._wsd_udp.publishService(epr, types, scopes, xAddrs)
+        self._wsd_proxy.publishService(service)
 
     def clearService(self, epr):
         self._wsd_proxy.clearService(epr)
@@ -1571,6 +1592,14 @@ class WSDiscoveryBase(object):
         self._dpAddr = None
         self._dpEPR = None
 
+        # for the client version of discovery
+        # we start a different udp port other than 3702
+
+        # python program ruinning
+        # it has its ws discovery instance
+        # it registers callbacks
+        # and on callback it starts/ or doesnt a sdc client ( we already discovered the device)
+
         self._remoteServiceProbeMatchCallback = None
         self._remoteServiceHelloCallback = None
         self._remoteServiceHelloCallbackTypesFilter = None
@@ -1582,8 +1611,9 @@ class WSDiscoveryBase(object):
         self._logger = logger or logging.getLogger('sdc.discover')
         random.seed(int(time.time() * 1000000))
 
-    def setDiscoveryProxyActive(self):
+    def setDiscoveryProxyActive(self, proxy_url):
         self._dpActive = True
+        self._dpAddr = urllib.parse.urlsplit(proxy_url)
 
     def setRemoteServiceProbeMatchCallback(self, cb):
         """Set callback, which will be called when a service was received via a ProbeMatch message.
@@ -1756,7 +1786,7 @@ class WSDiscoveryBase(object):
         env.setTo(WSA_ANONYMOUS)
         env.setInstanceId(str(service.getInstanceId()))
         if self._dpActive:
-            env.setUdpPort(service.getUdpPort())
+            env.setUdpAddr(service.getUdpAddr())
         env.setMessageNumber(str(service.getMessageNumber()))
         env.setRelatesTo(relatesTo)
         env.setProbeResolveMatches([ProbeResolveMatch(service.getEPR(), service.getTypes(), service.getScopes(),
@@ -1909,9 +1939,9 @@ class WSDiscoveryBase(object):
 
     def clearLocalServices(self):
         'send Bye messages for the services and remove them'
-        for service in self._localServices.values():
-            self._sendBye(service)
-        self._localServices.clear()
+
+        for epr in list(self._localServices.keys()):
+            self.clearService(epr)
 
     def searchServices(self, types=None, scopes=None, timeout=5, repeatProbeInterval=3):
         '''search for services given the TYPES and SCOPES in a given timeout
@@ -1975,8 +2005,7 @@ class WSDiscoveryBase(object):
         metadata_version = self._localServices[epr].getMetadataVersion() + 1 if epr in self._localServices else 1
 
         service = Service(types, scopes, xAddrs, epr, instanceId, metadata_version=metadata_version)
-        if self._dpActive:
-           self._networkingThread.makeServiceSockets(service)
+
         self._logger.info('publishing %r', service)
         self._localServices[epr] = service
         self._sendHello(service)
@@ -2051,7 +2080,7 @@ class WSDiscoverySingleAdapter(WSDiscoveryBase):
         # try to match name. if it matches, we are already ready.
         filteredAdapters = [a for a in all_adapters if a.friendly_name == adapterName]
         if len(filteredAdapters) == 1:
-            self._myIPaddress = (filteredAdapters[0].ip,)  # a tuple
+            self.adapterIPaddress = filteredAdapters[0].ip
             return
         if forceAdapterName:
             raise RuntimeError(
@@ -2060,7 +2089,7 @@ class WSDiscoverySingleAdapter(WSDiscoveryBase):
         # see if there is only one physical adapter. if yes, use it
         adapters_not_localhost = [a for a in all_adapters if not a.ip.startswith('127.')]
         if len(adapters_not_localhost) == 1:
-            self._myIPaddress = (adapters_not_localhost[0].ip,)  # a tuple
+            self.adapterIPaddress = adapters_not_localhost[0].ip
         else:
             raise RuntimeError('No adapter "{}" found. Cannot use default, having {}'.format(adapterName,
                                                                                              [a.friendly_name for a in
@@ -2068,8 +2097,116 @@ class WSDiscoverySingleAdapter(WSDiscoveryBase):
 
     def _isAcceptedAddress(self, addr):
         ''' check if any of the regular expressions matches the argument'''
-        return addr in self._myIPaddress
+        return addr == self.adapterIPaddress
+
+    def publishService(self, epr, types, scopes, xAddrs):
+        # For now only single adapter wsdiscovery can work with discovery proxy
+        if self._dpActive:
+            instanceId = _generateInstanceId()
+            service = Service(types, scopes, xAddrs, epr, instanceId)
+            self._localServices[epr] = service
+            self._networkingThread.makeServiceSocket(self.adapterIPaddress, self._localServices[epr])
+            return service
+        else:
+            super().publishService(epr, types, scopes, xAddrs)
+            return None
+
+    def clearService(self, epr):
+        if self._dpActive:
+            service = self._localServices[epr]
+            self._sendBye(service)
+            self._networkingThread.removeService(self.adapterIPaddress, epr)
+            del self._localServices[epr]
+        else:
+            super().clearService(epr)
+
+    def addClient(self, clientId):
+        if self._dpActive:
+            return self._networkingThread.makeClientSocket(self.adapterIPaddress, clientId)
+
+    def removeClient(self, clientId):
+        if self._dpActive:
+            self._networkingThread.removeClient(clientId)
+
+
+class WSDiscoveryProxyClientManager:
+
+    def __init__(self, proxy_url, adapterName, logger, sslContext):
+        self._logger = logging.getLogger('sdc.proxy.clientmanager')
+        self.proxyDisco = WSDiscoveryWithHTTPProxy(proxy_url, logger=logger, sslContext=sslContext)
+        self.udpDisco = WSDiscoverySingleAdapter(adapterName, logger=logger)
+        self.udpDisco.setDiscoveryProxyActive(proxy_url)
+        self.wsdiscovery = WsDiscoveryProxyAndUdp(self.proxyDisco, self.udpDisco)
+
+        self._ip = self.udpDisco.adapterIPaddress
+        self._clients = {}
+        self.clientServices = {}
+
+        self._remoteHelloCbs = {}
+        self._remoteResolveMatchCbs = {}
+        self._remoteByeCbs = {}
+        self._remoteProbeMatchCbs = {}
+        self._probeCbs = {}
+
+        self.udpDisco.setRemoteServiceHelloCallback(self._onHello)
+        self.udpDisco.setRemoteServiceResolveMatchCallback(self._onResolveMatch)
+        self.udpDisco.setRemoteServiceByeCallback(self._onBye)
+        self.udpDisco.setRemoteServiceProbeMatchCallback(self._onProbeMatch)
+        self.udpDisco.setOnProbeCallback(self._onProbe)
+
+    def register(self, helloCb=None, resolveMatchCb=None, byeCb=None, probeMatchCb=None, probeCb=None):
+        clientId = uuid.uuid4()
+        self._remoteHelloCbs[clientId] = helloCb
+        self._remoteResolveMatchCbs[clientId] = resolveMatchCb
+        self._remoteByeCbs[clientId] = byeCb
+        self._remoteProbeMatchCbs[clientId] = probeMatchCb
+        self._probeCbs[clientId] = probeCb
+        udpPort = self.udpDisco.addClient(clientId)
+        self._clients[clientId] = Client(id=clientId, addr=self._ip, udpPort=udpPort)
+        return clientId
+
+    def start(self):
+        self.wsdiscovery.start()
+
+    def stop(self):
+        self.wsdiscovery.stop()
+
+    def resolveServices(self, resolve):
+        self.proxyDisco.resolve_services = resolve
+
+    def removeClient(self, clientId):
+        self.udpDisco.removeClient(clientId)
+
+    def _onHello(self, addr, service):
+        for clientId, helloCb in self._remoteHelloCbs.items():
+            self._logger.debug("Processing Hello Callback for Client with ID: {}".format(clientId))
+            helloCb(addr, service)
+
+    def _onResolveMatch(self, service):
+        for clientId, resolveMatchCb in self._remoteResolveMatchCbs.items():
+            self._logger.debug("Processing ResolveMatch Callback for Client with ID: {}".format(clientId))
+            resolveMatchCb(service)
+
+    def _onBye(self, addr, uuid):
+        for clientId, byeCb in self._remoteByeCbs.items():
+            self._logger.debug("Processing Bye Callback for Client with ID: {}".format(clientId))
+            byeCb(addr, uuid)
+
+    def _onProbeMatch(self, addr, service):
+        for clientId, probeMatchCb in self._remoteProbeMatchCbs.items():
+            self._logger.debug("Processing Probe Match Callback for Client with ID: {}".format(clientId))
+            probeMatchCb(addr, service)
+
+    def _onProbe(self, addr, env):
+        for clientId, probeCb in self._probeCbs.items():
+            self._logger.debug("Processing Probe Callback for Client with ID: {}".format(clientId))
+            probeCb(addr, env)
+
+    def search(self, id, types, scopes, timeout=10, autoStart=False):
+        self.clientServices[id] = self.wsdiscovery.searchMultipleTypes(self._clients[id], types, scopes, timeout=timeout)
+        return self.clientServices[id]
 
 
 _FallbackMedicalDeviceTypesFilter = [QName(NS_DPWS, 'Device'),
                                      QName('http://standards.ieee.org/downloads/11073/11073-20702-2016', 'MedicalDevice')]
+
